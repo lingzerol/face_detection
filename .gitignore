@@ -1,0 +1,6 @@
+data/
+.vscode/
+__pycache__/
+facelib/__pycache__/
+runs/
+saves
