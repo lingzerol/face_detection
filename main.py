@@ -8,6 +8,7 @@ import train
 import argparse
 import os
 import logging
+import scipy.io as scio
 
 from tensorboardX import SummaryWriter
 
@@ -28,6 +29,14 @@ def load_data(dirname):
             br, lr = data.load_image_bbox_and_landmark(name, dirname)
             bboxes_list.update(br)
             landmarks_list.update(lr)
+        elif name.endswith("mat"):
+            bboxes_and_landmarks = scio.loadmat(path)
+            for filename, bbox, landmark in zip(bboxes_and_landmarks["filenames"],
+                                                bboxes_and_landmarks["bboxes"][0],
+                                                bboxes_and_landmarks["landmarks"][0]):
+                filename = filename.strip()
+                bboxes_list[filename] = bbox
+                landmarks_list[filename] = landmark
     return images_path, bboxes_list, landmarks_list
 
 
@@ -57,7 +66,7 @@ def main(args):
     if args.load:
         net.load_state_dict(torch.load(
             args.load, map_location=torch.device('cpu')))
-    args.experiment = True
+
     if args.experiment:
         experiment(net)
 
@@ -89,7 +98,7 @@ def main(args):
     saves_path = os.path.join(SAVE_DIR, args.name)
     os.makedirs(saves_path, exist_ok=True)
 
-    train_types = [train.TRAIN_PNET, train.train_Rnet, train.train_Onet]
+    train_types = [train.TRAIN_PNET, train.TRAIN_RNET, train.TRAIN_ONET]
     optimizers_list = [[p_net_optimizer, p_net_and_filter_optimizer], [
         r_net_optimizer, r_net_and_filter_optimizer],
         [o_net_optimizer, o_net_and_filter_optimizer]]
@@ -100,73 +109,93 @@ def main(args):
         for images_list, bboxes_list, landmarks_list in \
                 data.iterate_image_batches(train_path,
                                            bboxes_data, landmarks_data, 1):
-            images_list, bboxes_list, landmarks_list = data.generate_pyramid(
-                images_list, bboxes_list, landmarks_list)
-            images_list, labels_list, bboxes_list, landmarks_list = \
-                data.generate_images(
-                    images_list, bboxes_list, landmarks_list,
-                    mtcnn.PNET_INPUT_SIZE[0], mtcnn.PNET_INPUT_SIZE[1])
-            images_list = data.processing_images(images_list)
 
-            images_list = [torch.FloatTensor([image]).to(device)
-                           for image in images_list]
-            labels_list = [torch.FloatTensor(labels).to(device)
-                           for labels in labels_list]
-            bboxes_list = [torch.FloatTensor(bboxes).to(device)
-                           for bboxes in bboxes_list]
-            landmarks_list = [torch.FloatTensor(landmarks).to(
-                device) for landmarks in landmarks_list]
+            def train_network(images_list, bboxes_list, landmarks_list, epoch):
+                images_list, labels_list, bboxes_list, landmarks_list = \
+                    train.generate_pnet_ground_truth_data(
+                        images_list, bboxes_list, landmarks_list)
+                images_list = data.processing_images(images_list)
 
-            log.info("Image num: %d" % (len(images_list)))
+                images_list = torch.FloatTensor(images_list).to(device)
+                labels_list = [torch.FloatTensor(labels).to(device)
+                               for labels in labels_list]
+                bboxes_list = [torch.FloatTensor(bboxes).to(device)
+                               for bboxes in bboxes_list]
+                landmarks_list = [torch.FloatTensor(landmarks).to(
+                    device) for landmarks in landmarks_list]
 
-            filter = np.random.random() > 0.5
-            for _ in range(iter_time):
-                loss = train.train(net, optimizers[int(filter)], images_list,
-                                   labels_list, bboxes_list, landmarks_list,
-                                   filter=filter, train_type=train_type)
-                loss_list.append(loss)
-                writer.add_scalar("train_loss", loss, epoch)
-                log.info("Epoch: %d, mean loss: %.3f" % (epoch, loss))
-                if epoch % 1000 == 0:
-                    torch.save(net.state_dict(),
-                               os.path.join(saves_path,
-                                            "epoch_%d_loss_%.3f.dat" % (
-                                                epoch,
-                                                loss)))
+                log.info("Image num: %d" % (len(images_list)))
 
-                if epoch % 10000 == 0:
-                    classification_recall, bbox_recall, landmark_recall = \
-                        train.get_metrics(
-                            net, test_path, bboxes_data, landmarks_data,
-                            device)
-                    if max_classification_recall < classification_recall or \
-                            max_bbox_recall < bbox_recall or \
-                            max_landmark_recall < landmark_recall:
-                        max_classification_recall = classification_recall
-                        max_bbox_recall = bbox_recall
-                        max_landmark_recall = landmark_recall
+                filter = np.random.random() > 0.5
+                for _ in range(iter_time):
+                    loss = train.train(net, optimizers[int(filter)],
+                                       images_list, labels_list,
+                                       bboxes_list, landmarks_list,
+                                       filter=filter, train_type=train_type)
+                    loss_list.append(loss)
+                    writer.add_scalar("train_loss", loss, epoch)
+                    log.info("Epoch: %d, mean loss: %.3f" % (epoch, loss))
+                    if epoch % 1000 == 0:
                         torch.save(net.state_dict(),
                                    os.path.join(saves_path,
-                                                "epoch_%d_cr_%.3f_br_%.3f"
-                                                "_lr_%.3f.dat" % (
+                                                "epoch_%d_loss_%.3f.dat" % (
                                                     epoch,
-                                                    max_classification_recall,
-                                                    max_bbox_recall,
-                                                    max_landmark_recall)))
-                        log.info("Epoch: %d, classification recall: %.3f, "
-                                 "bboxes recall: %.3f,"
-                                 "landmark recall: %.3f"
-                                 % (epoch,
-                                     classification_recall,
-                                     bbox_recall, landmark_recall))
-                        writer.add_scalar(
-                            "classification_recall", max_classification_recall,
-                            epoch)
-                        writer.add_scalar(
-                            "landmark_recall", max_landmark_recall, epoch)
-                        writer.add_scalar(
-                            "bbox_recall", max_bbox_recall, epoch)
-                epoch += 1
+                                                    loss)))
+
+                    # if epoch % 10000 == 0:
+                    #     classification_recall, bbox_recall, landmark_recall = \
+                    #         train.get_metrics(
+                    #             net, test_path, bboxes_data, landmarks_data,
+                    #             device)
+                    #     if max_classification_recall < \
+                    #         classification_recall or \
+                    #             max_bbox_recall < bbox_recall or \
+                    #             max_landmark_recall < landmark_recall:
+                    #         max_classification_recall = classification_recall
+                    #         max_bbox_recall = bbox_recall
+                    #         max_landmark_recall = landmark_recall
+                    #         torch.save(net.state_dict(),
+                    #                    os.path.join(saves_path,
+                    #                                 "epoch_%d_cr_%.3f_br_%.3f"
+                    #                                 "_lr_%.3f.dat" % (
+                    #                                     epoch,
+                    #                                     max_classification_recall,
+                    #                                     max_bbox_recall,
+                    #                                     max_landmark_recall)))
+                    #         log.info("Epoch: %d, classification recall: %.3f, "
+                    #                  "bboxes recall: %.3f,"
+                    #                  "landmark recall: %.3f"
+                    #                  % (epoch,
+                    #                     classification_recall,
+                    #                     bbox_recall, landmark_recall))
+                    #         writer.add_scalar(
+                    #             "classification_recall",
+                    #             max_classification_recall,
+                    #             epoch)
+                    #         writer.add_scalar(
+                    #             "landmark_recall", max_landmark_recall, epoch)
+                    #         writer.add_scalar(
+                    #             "bbox_recall", max_bbox_recall, epoch)
+                    epoch += 1
+                return epoch
+            scale = 0.8
+            width = int(images_list[0].shape[1])
+            height = int(images_list[0].shape[0])
+            while width > data.MIN_IMAGE_WIDTH and height > data.MIN_IMAGE_HEIGHT:
+                print("training scale data, width: %d, height: %d" %
+                      (width, height))
+                scale_images_list, scale_bboxes_list, scale_landmarks_list = data.resize_image_bboxes_landmarks(
+                    images_list, bboxes_list, landmarks_list, [width, height])
+                epoch = train_network(scale_images_list,
+                                      scale_bboxes_list, scale_landmarks_list, epoch)
+                for _ in range(iter_time):
+                    random_images_list, random_labels_list, random_bboxes_list, random_landmarks_list = \
+                        data.generate_random_data(
+                            scale_images_list, scale_bboxes_list, scale_landmarks_list)
+                    epoch = train_network(random_images_list,
+                                          random_bboxes_list, random_landmarks_list, epoch)
+                width = int(width*scale)
+                height = int(height*scale)
 
 
 if __name__ == "__main__":
@@ -178,11 +207,11 @@ if __name__ == "__main__":
     parser.add_argument("-d", "--data", required=True,
                         default="./data/train", help="the"
                         "path of training data")
-    parser.add_argument("--pt", required=False, default=1000,
+    parser.add_argument("--pt", required=False, default=10,
                         type=int, help="training pnet times")
-    parser.add_argument("--rt", required=False, default=1000,
+    parser.add_argument("--rt", required=False, default=10,
                         type=int, help="training rnet times")
-    parser.add_argument("--ot", required=False, default=1000,
+    parser.add_argument("--ot", required=False, default=10,
                         type=int, help="training onet times")
 
     parser.add_argument("-e", "--experiment", required=False,

@@ -126,142 +126,142 @@ def iterate_image_batches(images_path, bboxes, landmarks, batch_size):
 
 
 def generate_region(width, height, max_scale):
-    region = [np.random.randint(0, max(1, int(width*(1-max_scale))), 1)[0],
-              np.random.randint(0, max(1, int(height*(1-max_scale))), 1)[0],
+    max_width = max(MIN_IMAGE_WIDTH, int(width*max_scale))
+    max_height = max(MIN_IMAGE_HEIGHT, int(height*max_scale))
+    region = [np.random.randint(0, (width-max_width)+1, 1)[0],
+              np.random.randint(0, (height-max_height)+1, 1)[0],
               0, 0]
     region[2] = np.random.randint(
-        MIN_IMAGE_WIDTH, int(width*(max_scale)), 1)[0]
+        MIN_IMAGE_WIDTH, max_width+1, 1)[0]
     region[3] = np.random.randint(
-        MIN_IMAGE_HEIGHT, int(height*(max_scale)), 1)[0]
+        MIN_IMAGE_HEIGHT, max_height+1, 1)[0]
     return region
 
 
-def resize_image_bboxes_landmarks(image, bboxes, landmarks, size):
+def transform_bbox(bbox, start_point, scale):
+    bbox = np.array(bbox)
+    bbox_scale = np.tile(scale, [1, 2])
+    bbox = bbox * bbox_scale
+
+    bbox_translation = np.zeros([1, 4])
+    bbox_translation[:, :2] = start_point
+    bbox = bbox + bbox_translation
+    return list(bbox)
+
+
+def transform_landmark(landmark, start_point, scale):
+    landmark = np.array(landmark)
+    landmark_scale = np.tile(scale, [1, 5])
+    landmark = landmark * landmark_scale
+
+    landmark_translation = np.tile(start_point, [1, 5])
+    landmark = landmark + landmark_translation
+    return list(landmark)
+
+
+def generate_random_data(images_list, bboxes_list,
+                         landmarks_list):
     """
-    resize image, bboxes, landmarks into size
-    param: image: numpy array
-    param: bboxes: bboxes of the image
-    param: landmarks: landmarks of the image
+    random crop the image to generate new data
+    param: images_list: list of image
+    param: bboxes_list: bboxes of the image
+    param: landmarks_list: landmarks of the image
     param: size: target size, (width, height)
-    return: (image, bboxes, landmarks) wanted to resize
-    """
-    bboxes = np.array(bboxes)
-    landmarks = np.array(landmarks)
-    image = np.array(image)
-
-    origin_width = image.shape[1]
-    origin_height = image.shape[0]
-
-    scale_width = origin_width/size[0]
-    scale_height = origin_height/size[1]
-
-    resized_bboxes = bboxes.copy()
-    for i in range(len(bboxes)):
-        resized_bboxes[i][0] /= scale_width
-        resized_bboxes[i][1] /= scale_height
-        resized_bboxes[i][2] /= scale_width
-        resized_bboxes[i][3] /= scale_height
-
-    resized_landmarks = landmarks.copy()
-    for i in range(len(landmarks)):
-        for j in range(len(landmarks[i])):
-            if i % 2 == 0:
-                resized_landmarks[i][j] /= scale_width
-            else:
-                resized_landmarks[i][j] /= scale_height
-    resized_image = cv2.resize(image, tuple(size))
-    return resized_image, resized_bboxes, resized_landmarks
-
-
-def generate_images(images_list, bboxes_list, landmarks_list,
-                    dest_width, dest_height, num=15,
-                    max_scale=0.7):
-    """
-    generate positive, negative and partial face data from an image
-    param: images_list: numpy array, shape = (batch, height, width, channel)
-    param: bboxes_list: numpy array, shape = (batch, num, 4)
-    param: num: num of dataset should be generated
-    param: landmarks_list: numpt array, shape = (batch, num, 10)
-    return: images: list, shape = (num, height, width, channel)
-    return: labels: list, the label of the cropped image, shape =
-    (num, 1)
-    return: bboxes: list, the bbox of the target in image, element is a
-    bbox list
-    return: landmarks: list, the landmarks of target in image, the element
-    is landmark
+    return: (image, labels, bboxes, landmarks) generated data
     """
 
-    labels = []
-    images = []
-    bboxes_result = []
-    landmarks_result = []
-    zero_landmarks = list(np.zeros(LANDMARK_POINT_NUM*2))
-    zero_region = [0, 0, 0, 0]
+    cropped_images_list = []
+    cropped_bboxes_list = []
+    cropped_landmarks_list = []
+    cropped_labels_list = []
+
+    width = images_list[0].shape[1]
+    height = images_list[0].shape[0]
+
+    cropped_region = generate_region(width, height, 0.5)
+    zero_bbox = [0]*4
+    zero_landmark = [0]*10
 
     for image, bboxes, landmarks in zip(images_list, bboxes_list,
                                         landmarks_list):
-        width = image.shape[1]
-        height = image.shape[0]
-        dest_image, dest_bboxes, dest_landmarks = \
-            resize_image_bboxes_landmarks(
-                image, bboxes, landmarks, (dest_width, dest_height))
-        images.append(dest_image)
-        labels.append([1.0])
-        bboxes_result.append(list(dest_bboxes))
-        landmarks_result.append(list(dest_landmarks))
-        if int(width*max_scale) <= MIN_IMAGE_WIDTH or \
-                int(height*max_scale) <= MIN_IMAGE_HEIGHT:
-            continue
-        for i in range(num):
-            region = generate_region(width, height, max_scale)
-            dest_image = image[region[1]:(region[1]+region[3]),
-                               region[0]:(region[0]+region[2]), :]
+        image = image[cropped_region[1]:(cropped_region[1]+cropped_region[3]),
+                      cropped_region[0]:(cropped_region[0]+cropped_region[2]),
+                      :]
+        intersect_bbox = [utils.intersect_region(
+            b, cropped_region) for b in bboxes]
+        iou_list = [utils.IOU(intersect_bbox[i], bboxes[i])
+                    for i in range(len(intersect_bbox))]
 
-            intersect_region = []
-            origin_intersect_region = []
-            for bbox in bboxes:
-                xmin = max(bbox[0], region[0])
-                ymin = max(bbox[1], region[1])
-                xmax = min(bbox[0] + bbox[2], region[0]+region[2])
-                ymax = min(bbox[1] + bbox[3], region[1]+region[3])
+        iou_list = np.array(iou_list)
+        indices = np.where(iou_list > NEGATIVE_UPPER_BOUNCE)[0]
+        max_iou = np.argmax(iou_list)
+        if len(indices) > 0:
+            intersect_bbox = np.array(intersect_bbox)
+            bboxes = list(intersect_bbox[indices])
 
-                if xmin >= xmax or ymin >= ymax:
-                    intersect_region.append(zero_region)
-                    origin_intersect_region.append(zero_region)
+            landmarks = np.array(landmarks)
+            landmarks = list(landmarks[indices])
+
+            bboxes = transform_bbox(bboxes, cropped_region[:2], (1, 1))
+            landmarks = transform_landmark(
+                landmarks, cropped_region[:2], (1, 1))
+            label = 1 if max_iou > POSITIVE_LOWER_BOUNCE else 0.8
+        else:
+            bboxes = [zero_bbox]
+            landmarks = [zero_landmark]
+            label = 0
+        cropped_images_list.append(image)
+        cropped_bboxes_list.append(bboxes)
+        cropped_landmarks_list.append(landmarks)
+        cropped_labels_list.append(label)
+    return cropped_images_list, cropped_labels_list, \
+        cropped_bboxes_list, cropped_landmarks_list
+
+
+def resize_image_bboxes_landmarks(images_list, bboxes_list,
+                                  landmarks_list, size):
+    """
+    resize image, bboxes, landmarks into size
+    param: images_list: list of image
+    param: bboxes_list: bboxes of the image
+    param: landmarks_list: landmarks of the image
+    param: size: target size, (width, height)
+    return: (image, bboxes, landmarks) wanted to resize
+    """
+    resized_image_list = []
+    resized_bboxes_list = []
+    resized_landmarks_list = []
+    for image, bboxes, landmarks in zip(images_list, bboxes_list,
+                                        landmarks_list):
+
+        origin_width = image.shape[1]
+        origin_height = image.shape[0]
+
+        scale_width = origin_width/size[0]
+        scale_height = origin_height/size[1]
+
+        resized_image = cv2.resize(image, tuple(size))
+
+        resized_bboxes = []
+        for b in bboxes:
+            resized_b = [b[0]/scale_width, b[1]/scale_height,
+                         b[2]/scale_width, b[3]/scale_height]
+        resized_bboxes.append(resized_b)
+
+        resized_landmarks = []
+        for lr in landmarks:
+            resized_lr = []
+            for j, lr_value in enumerate(lr):
+                if j % 2 == 0:
+                    resized_lr.append(lr_value/scale_width)
                 else:
-                    intersect_region.append(
-                        [xmin-region[0], ymin-region[1], xmax-xmin, ymax-ymin])
-                    origin_intersect_region.append(
-                        [xmin, ymin, xmax-xmin, ymax-ymin])
-            iou_list = [utils.IOU(oir, bbox)
-                        for oir in origin_intersect_region]
-            target_landmarks = []
-            target_region = []
-            target_label = []
-            for j, iou in enumerate(iou_list):
-                tl = [(lm-region[k % 2]) for k, lm in enumerate(landmarks[j])]
-                if iou < POSITIVE_LOWER_BOUNCE and \
-                        iou >= NEGATIVE_UPPER_BOUNCE:
-                    target_landmarks.append(tl)
-                    target_region.append(intersect_region[j])
-                    target_label.append(0.8)
-                elif iou >= POSITIVE_LOWER_BOUNCE:
-                    target_label.append(1.0)
-                    target_landmarks.append(tl)
-                    target_region.append(intersect_region[j])
-            if len(target_landmarks) == 0:
-                target_landmarks.append(zero_landmarks)
-                target_region.append(zero_region)
-                target_label.append(0)
-            dest_image, dest_bboxes, dest_landmarks = \
-                resize_image_bboxes_landmarks(
-                    dest_image, target_region, target_landmarks,
-                    (dest_width, dest_height))
-            images.append(dest_image)
-            landmarks_result.append(dest_landmarks)
-            labels.append(target_label)
-            bboxes_result.append(dest_bboxes)
-    return images, labels, bboxes_result, landmarks_result
+                    resized_lr.append(lr_value/scale_height)
+            resized_landmarks.append(resized_lr)
+        resized_image_list.append(resized_image)
+        resized_bboxes_list.append(resized_bboxes)
+        resized_landmarks_list.append(resized_landmarks)
+
+    return resized_image_list, resized_bboxes_list, resized_landmarks_list
 
 
 def generate_pyramid(images_list, bboxes_list, landmarks_list, scale=0.7,

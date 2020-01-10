@@ -1,5 +1,67 @@
 import numpy as np
-import cv2
+from multiprocessing.dummy import Pool
+
+
+class MultiThreadPool:
+    def __init__(self, pool_size=1):
+        self.pool_size = pool_size
+        self._pool = Pool(self.pool_size)
+
+    def start(self, target, args):
+        self._pool.apply_async(func=target, agrs=args)
+
+    def join(self):
+        self._pool.close()
+        self._pool.join()
+
+        self._pool = Pool(self.pool_size)
+
+    def map(self, target, args_list):
+        self._pool.map(target, args_list)
+
+    def __del__(self):
+        self._pool.close()
+        self._pool.join()
+
+
+def intersect_region(r1, r2):
+    xmin_i = max(r1[0], r2[0])
+    ymin_i = max(r1[1], r2[1])
+
+    xmax_i = min(r1[2]+r1[0], r2[2]+r2[0])
+    ymax_i = min(r1[3]+r1[1], r2[3]+r2[1])
+
+    w = max(0, xmax_i-xmin_i)
+    h = max(0, ymax_i-ymin_i)
+
+    if w == 0 or h == 0:
+        xmin_i = 0
+        ymin_i = 0
+
+    return (xmin_i, ymin_i, w, h)
+
+
+def start_points_for_conv(size, kernel_size, stride, padding=(0, 0)):
+    """
+    get the start_points of every result of the conv
+    param: size: (width, height), image size
+    param: kernel_size, stride, padding: conv param
+    return: start_points: list of the start_point of every result,
+    len = (height*width)
+    """
+    if isinstance(kernel_size, int):
+        kernel_size = [kernel_size, kernel_size]
+    if isinstance(stride, int):
+        stride = [stride, stride]
+    if isinstance(padding, int):
+        padding = [padding, padding]
+    width = size[0] + 2*padding[0]
+    height = size[1] + 2*padding[1]
+    start_points = []
+    for i in range(0, int((height-kernel_size[0]+stride[0])/stride[0])):
+        for j in range(0, int((width-kernel_size[1]+stride[1])/stride[1])):
+            start_points.append([j*stride[0], i*stride[1]])
+    return start_points
 
 
 def iterate_batches(data, batch_size):
@@ -33,16 +95,9 @@ def Intersect(r1, r2):
     param: r2: (x, y, width, height)
     return: a number: area of intersect
     """
-    xmin_i = max(r1[0], r2[0])
-    ymin_i = max(r1[1], r2[1])
+    r = intersect_region(r1, r2)
 
-    xmax_i = min(r1[2]+r1[0], r2[2]+r2[0])
-    ymax_i = min(r1[3]+r1[1], r2[3]+r2[1])
-
-    w = max(0, xmax_i-xmin_i)
-    h = max(0, ymax_i-ymin_i)
-
-    return w*h
+    return r[2]*r[3]
 
 
 def Union(r1, r2):

@@ -1,8 +1,7 @@
 import torch
 import torch.nn
 
-from facelib import utils, mtcnn, data
-
+from facelib import utils, mtcnn, data, model_utils
 import numpy as np
 
 import logging
@@ -17,107 +16,117 @@ TRAIN_ONET = "O_Net"
 log = logging.getLogger("train")
 
 
-def generate_ground_truth_data(labels, bboxes, landmarks,
-                               res_bboxes):
-    res_num = res_bboxes.shape[0]
-    gt_labels = []
-    gt_bboxes = []
-    gt_landmarks = []
-    for i in range(res_num):
-        num = labels.shape[0]
-        iou_list = [utils.IOU(bboxes[j], res_bboxes[i])
-                    for j in range(num)]
-        max_iou_idx = np.argmax(iou_list)
-        gt_labels.append(labels[max_iou_idx])
-        gt_bboxes.append(bboxes[max_iou_idx])
-        gt_landmarks.append(landmarks[max_iou_idx])
-    gt_labels = torch.stack(gt_labels, dim=0)
-    gt_bboxes = torch.stack(gt_bboxes, dim=0)
-    gt_landmarks = torch.stack(gt_landmarks, dim=0)
-    return gt_labels, gt_bboxes, gt_landmarks
+def generate_pnet_ground_truth_data(images_list, bboxes_list, landmarks_list):
+    """
+    generate_pnet_ground_truth_data
+    param: images_list: list of image
+    param: bboxes_list: list of all bounding-boxes of the image
+    param: landmarks_list: list of all landmarks of the image
+    return: (images_list, labels_list, new_bboxes_list, new_landmarks_list)
+    """
+    num = len(images_list)
+
+    new_bboxes_list = []
+    new_landmarks_list = []
+    labels_list = []
+
+    for i in range(num):
+        width = images_list[i].shape[1]
+        height = images_list[i].shape[0]
+        start_points_list = utils.start_points_for_conv(
+            [width, height], mtcnn.PNET_INPUT_SIZE, (2, 2))
+
+        present_bboxes = []
+        present_landmarks = []
+        present_labels = []
+        for start_point in start_points_list:
+
+            iou_list = [
+                utils.IOU([start_point[0], start_point[1], 12, 12], b)
+                for b in bboxes_list[i]]
+            intersect = [utils.intersect_region(
+                [start_point[0], start_point[1], 12, 12], b) for b in bboxes_list[i]]
+
+            intersect = [(start_point[0], start_point[1], 0, 0)
+                         if b[2] == 0 or b[3] == 0 else b for b in intersect]
+
+            inters_landmark = [lm for lm in landmarks_list[i]]
+
+            max_iou = np.max(iou_list)
+            max_iou_idx = np.argmax(iou_list)
+
+            if max_iou < NEGATIVE_UPPER_BOUNCE:
+                zero_landmark = [start_point[0] if i %
+                                 2 == 0 else start_point[1] for i in range(10)]
+                present_bboxes.append([start_point[0], start_point[1], 0, 0])
+                present_labels.append(0)
+                present_landmarks.append(zero_landmark)
+            elif max_iou < POSITIVE_LOWER_BOUNCE:
+                present_bboxes.append(intersect[max_iou_idx])
+                present_labels.append(0.8)
+                present_landmarks.append(inters_landmark[max_iou_idx])
+            else:
+                present_bboxes.append(intersect[max_iou_idx])
+                present_labels.append(1.0)
+                present_landmarks.append(inters_landmark[max_iou_idx])
+        new_bboxes_list.append(present_bboxes)
+        new_landmarks_list.append(present_landmarks)
+        labels_list.append(present_labels)
+    return images_list, labels_list, new_bboxes_list, new_landmarks_list
 
 
-def train(net, optimizer, images_list, labels_list,
-          bboxes_list, landmarks_list,
+def train(net, optimizer, images, labels,
+          bboxes, landmarks,
           filter, train_type=TRAIN_ONET):
-    loss_list = []
-    for image, labels, bboxes, landmarks in zip(images_list,
-                                                labels_list,
-                                                bboxes_list,
-                                                landmarks_list):
-        if train_type == TRAIN_PNET:
-            classifications_result, bboxes_result, landmarks_result = \
-                net.forward_to_pnet(image, filter)
-        elif train_type == TRAIN_RNET:
-            classifications_result, bboxes_result, landmarks_result = \
-                net.forward_to_rnet(image, filter)
-        elif train_type == TRAIN_ONET:
-            classifications_result, bboxes_result, landmarks_result = \
-                net.forward_to_onet(image, filter)
-        else:
-            log.error("error train type %s" % (train_type))
-            return
 
-        classifications_result = classifications_result[0]
-        bboxes_result = bboxes_result[0]
-        landmarks_result = landmarks_result[0]
-        width = image.shape[-1]
-        height = image.shape[-2]
-        bboxes = mtcnn.scale_bounding_box(bboxes, width, height)
-        landmarks = mtcnn.scale_landmarks(landmarks,
-                                          width, height)
-        bboxes = bboxes.clamp(min=0.0, max=1.0)
-        landmarks = landmarks.clamp(min=0.0, max=1.0)
-        if labels.numel() > 1:
-            gt_labels, gt_bboxes, gt_landmarks = \
-                generate_ground_truth_data(
-                    labels, bboxes, landmarks, bboxes_result)
-        else:
-            gt_labels = labels[0]
-            gt_bboxes = bboxes[0]
-            gt_landmarks = landmarks[0]
-        res_labels_positive = torch.clamp(
-            classifications_result[:, 0], min=1e-3, max=0.999)
-        res_labels_negative = torch.clamp(
-            classifications_result[:, 1], min=1e-3, max=0.999)
-        label_loss = -(gt_labels*torch.log(res_labels_positive) +
-                       (1-gt_labels)*(torch.log(res_labels_negative)))
+    if train_type == TRAIN_PNET:
+        batch_output = net.forward_to_pnet(images, filter)
+        if not filter:
+            batch_output = batch_output[:3]
+    elif train_type == TRAIN_RNET:
+        batch_output = net.forward_to_rnet(images, filter)
+    else:
+        batch_output = net.forward_to_onet(images, filter)
+
+    lable_loss_list = []
+    bbox_loss_list = []
+    landmark_loss_list = []
+
+    for i, output in enumerate(zip(*batch_output)):
+        classifications_result, bboxes_result, landmarks_result = \
+            output[:3]
+        gt_labels = labels[i]
+        gt_bboxes = bboxes[i]
+        gt_landmarks = landmarks[i]
+        if len(output) == 4:
+            indices = output[3]
+            gt_labels = gt_labels.index_select(0, indices)
+            gt_bboxes = gt_bboxes.index_select(0, indices)
+            gt_landmarks = gt_landmarks.index_select(0, indices)
+
+        lable_loss = -(gt_labels*torch.log(classifications_result[:, 0])+(
+            1-gt_labels)*torch.log(classifications_result[:, 1]))
         bbox_loss = torch.sum((bboxes_result - gt_bboxes)**2, -1)
         landmark_loss = torch.sum((landmarks_result - gt_landmarks)**2, -1)
+        lable_loss_list.append(lable_loss)
+        bbox_loss_list.append(bbox_loss)
+        landmark_loss_list.append(landmark_loss)
 
-        optimizer.zero_grad()
-        if train_type == TRAIN_PNET or train_type == TRAIN_RNET:
-            loss = label_loss + bbox_loss*0.5 + landmark_loss*0.5
-        elif train_type == TRAIN_ONET:
-            loss = label_loss + bbox_loss*0.5 + landmark_loss
-        else:
-            loss = label_loss + bbox_loss + landmark_loss
-        loss = torch.mean(loss, -1)
-        loss.backward()
-        optimizer.step()
-        loss_list.append(loss.item())
-    return np.mean(loss_list)
+    lable_loss_list = torch.cat(lable_loss_list)
+    bbox_loss_list = torch.cat(bbox_loss_list)
+    landmark_loss_list = torch.cat(landmark_loss_list)
 
+    if train_type == TRAIN_RNET or train_type == TRAIN_PNET:
+        loss = lable_loss_list + bbox_loss_list*0.5 + landmark_loss_list*0.5
+    else:
+        loss = lable_loss_list + bbox_loss_list*0.5 + landmark_loss_list
 
-def train_Pnet(net, optimizer, images_list, labels_list,
-               bboxes_list, landmarks_list,
-               filter=False):
-    train(net, optimizer, images_list, labels_list,
-          bboxes_list, landmarks_list, filter, "P_Net")
+    loss = torch.mean(loss)
 
-
-def train_Rnet(net, optimizer, images_list, labels_list,
-               bboxes_list, landmarks_list,
-               filter=False):
-    train(net, optimizer, images_list, labels_list,
-          bboxes_list, landmarks_list, filter, "R_Net")
-
-
-def train_Onet(net, optimizer, images_list, labels_list,
-               bboxes_list, landmarks_list,
-               filter=False):
-    train(net, optimizer, images_list, labels_list,
-          bboxes_list, landmarks_list, filter, "O_Net")
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    return loss.item()
 
 
 def calc_bbox_metrics(res, gt):
