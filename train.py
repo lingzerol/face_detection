@@ -36,11 +36,12 @@ def generate_pnet_ground_truth_data(images_list, bboxes_list, landmarks_list):
         start_points_list = utils.start_points_for_conv(
             [width, height], mtcnn.PNET_INPUT_SIZE, (2, 2))
 
-        present_bboxes = []
-        present_landmarks = []
-        present_labels = []
-        for start_point in start_points_list:
-
+        present_bboxes = [0]*len(start_points_list)
+        present_landmarks = [0]*len(start_points_list)
+        present_labels = [0]*len(start_points_list)
+        # for start_point in start_points_list:
+        def get_start_point(idx):
+            start_point = start_points_list[idx]
             iou_list = [
                 utils.IOU([start_point[0], start_point[1], 12, 12], b)
                 for b in bboxes_list[i]]
@@ -58,17 +59,20 @@ def generate_pnet_ground_truth_data(images_list, bboxes_list, landmarks_list):
             if max_iou < NEGATIVE_UPPER_BOUNCE:
                 zero_landmark = [start_point[0] if i %
                                  2 == 0 else start_point[1] for i in range(10)]
-                present_bboxes.append([start_point[0], start_point[1], 0, 0])
-                present_labels.append(0)
-                present_landmarks.append(zero_landmark)
+                present_bboxes[idx] = ([start_point[0], start_point[1], 0, 0])
+                present_labels[idx] = (0)
+                present_landmarks[idx] = (zero_landmark)
             elif max_iou < POSITIVE_LOWER_BOUNCE:
-                present_bboxes.append(intersect[max_iou_idx])
-                present_labels.append(0.8)
-                present_landmarks.append(inters_landmark[max_iou_idx])
+                present_bboxes[idx] = (intersect[max_iou_idx])
+                present_labels[idx] = (0.8)
+                present_landmarks[idx] = (inters_landmark[max_iou_idx])
             else:
-                present_bboxes.append(intersect[max_iou_idx])
-                present_labels.append(1.0)
-                present_landmarks.append(inters_landmark[max_iou_idx])
+                present_bboxes[idx] = (intersect[max_iou_idx])
+                present_labels[idx] = (1.0)
+                present_landmarks[idx] = (inters_landmark[max_iou_idx])
+        
+        pool = utils.MultiThreadPool(utils.MAX_THREAD_NUM)
+        pool.map(get_start_point, range(len(start_points_list)))
         new_bboxes_list.append(present_bboxes)
         new_landmarks_list.append(present_landmarks)
         labels_list.append(present_labels)

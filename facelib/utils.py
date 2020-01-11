@@ -1,6 +1,7 @@
 import numpy as np
 from multiprocessing.dummy import Pool
 
+MAX_THREAD_NUM = 1000
 
 class MultiThreadPool:
     def __init__(self, pool_size=1):

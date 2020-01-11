@@ -62,7 +62,6 @@ def main(args):
     device = torch.device(
         "cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     net = mtcnn.Mtcnn().to(device)
-    args.load = "D:/Downloads/epoch_1000_loss_0.983.dat"
     if args.load:
         net.load_state_dict(torch.load(
             args.load, map_location=torch.device('cpu')))
@@ -108,13 +107,18 @@ def main(args):
             zip(train_types, optimizers_list, iter_times):
         for images_list, bboxes_list, landmarks_list in \
                 data.iterate_image_batches(train_path,
-                                           bboxes_data, landmarks_data, 1):
+                                           bboxes_data, landmarks_data, 32):
 
             def train_network(images_list, bboxes_list, landmarks_list, epoch):
                 images_list, labels_list, bboxes_list, landmarks_list = \
                     train.generate_pnet_ground_truth_data(
                         images_list, bboxes_list, landmarks_list)
                 images_list = data.processing_images(images_list)
+
+                if np.sum(labels_list) > 0:
+                    round_num = iter_time*100
+                else:
+                    round_num = iter_time
 
                 images_list = torch.FloatTensor(images_list).to(device)
                 labels_list = [torch.FloatTensor(labels).to(device)
@@ -126,8 +130,9 @@ def main(args):
 
                 log.info("Image num: %d" % (len(images_list)))
 
+
                 filter = np.random.random() > 0.5
-                for _ in range(iter_time):
+                for _ in range(round_num):
                     loss = train.train(net, optimizers[int(filter)],
                                        images_list, labels_list,
                                        bboxes_list, landmarks_list,
@@ -178,9 +183,9 @@ def main(args):
                     #             "bbox_recall", max_bbox_recall, epoch)
                     epoch += 1
                 return epoch
-            scale = 0.8
-            width = int(images_list[0].shape[1])
-            height = int(images_list[0].shape[0])
+            scale = 0.95
+            width = int(images_list[0].shape[1]*0.2)
+            height = int(images_list[0].shape[0]*0.2)
             while width > data.MIN_IMAGE_WIDTH and height > data.MIN_IMAGE_HEIGHT:
                 print("training scale data, width: %d, height: %d" %
                       (width, height))
@@ -188,12 +193,12 @@ def main(args):
                     images_list, bboxes_list, landmarks_list, [width, height])
                 epoch = train_network(scale_images_list,
                                       scale_bboxes_list, scale_landmarks_list, epoch)
-                for _ in range(iter_time):
-                    random_images_list, random_labels_list, random_bboxes_list, random_landmarks_list = \
-                        data.generate_random_data(
-                            scale_images_list, scale_bboxes_list, scale_landmarks_list)
-                    epoch = train_network(random_images_list,
-                                          random_bboxes_list, random_landmarks_list, epoch)
+                # for _ in range(iter_time):
+                #     random_images_list, random_labels_list, random_bboxes_list, random_landmarks_list = \
+                #         data.generate_random_data(
+                #             scale_images_list, scale_bboxes_list, scale_landmarks_list)
+                #     epoch = train_network(random_images_list,
+                #                           random_bboxes_list, random_landmarks_list, epoch)
                 width = int(width*scale)
                 height = int(height*scale)
 

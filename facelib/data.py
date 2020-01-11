@@ -83,6 +83,7 @@ def load_image_bbox_and_landmark(filename, dir_name="./"):
         for line in fin.readlines():
             d = line.split()
             image_name = os.path.split(d[0])[-1]
+            image_name = image_name.split("\\")[-1]
             rectangle = [int(d[1]), int(d[3]), int(
                 d[2])-int(d[1]), int(d[4])-int(d[3])]
             ld = list(map(float, d[5:]))

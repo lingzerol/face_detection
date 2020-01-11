@@ -44,11 +44,15 @@ def filter_and_translation_output(data, start_points_list, scales_list,
 
     batch_num = len(classification)
 
-    classification_list = []
-    bbox_list = []
-    landmark_list = []
-    indices_list = []
-    for i in range(batch_num):
+    classification_list = [0]*batch_num
+    bbox_list = [0]*batch_num
+    landmark_list = [0]*batch_num
+    if filter:
+        indices_list = [0]*batch_num
+    else:
+        indices_list = []
+    # for i in range(batch_num):
+    def filter_and_translate(i):
         num = classification[i].shape[0]
         bbox_scale = scales_list[i].repeat(1, 2)
         landmark_scale = scales_list[i].repeat(1, 5)
@@ -71,11 +75,13 @@ def filter_and_translation_output(data, start_points_list, scales_list,
             sub_bbox = model_utils.bounding_box_regression(
                 bbr_net, sub_landmark, sub_bbox)
 
-            indices_list.append(indices)
+            indices_list[i] = (indices)
 
-        classification_list.append(sub_classification)
-        bbox_list.append(sub_bbox)
-        landmark_list.append(sub_landmark)
+        classification_list[i] = (sub_classification)
+        bbox_list[i] = (sub_bbox)
+        landmark_list[i] = (sub_landmark)
+    pool = utils.MultiThreadPool(utils.MAX_THREAD_NUM)
+    pool.map(filter_and_translate, range(batch_num))
     return classification_list, bbox_list, landmark_list, indices_list
 
 # pnet ouput to rnet input
